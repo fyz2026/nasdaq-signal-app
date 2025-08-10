@@ -57,7 +57,7 @@ def load_data(tkr: str, period: str):
     return yf.download(tkr, period=period, interval="1d", auto_adjust=True, progress=False)
 
 # -----------------------------
-# ماسح الزخم (Top 10) — مصحح
+# ماسح الزخم (Top 10) — مقارنات scalar
 # -----------------------------
 def scan_momentum(tickers, vol_mult=1.5):
     end = datetime.date.today()
@@ -73,13 +73,11 @@ def scan_momentum(tickers, vol_mult=1.5):
             today = df.iloc[-1]
             prev  = df.iloc[-2]
 
-            # نسبة تغير اليوم (scalar)
-            pct = float((today["Close"] - prev["Close"]) / prev["Close"] * 100.0)
+            pct = float((float(today["Close"]) - float(prev["Close"])) / float(prev["Close"]) * 100.0)
 
-            # مقارنة فوليوم (scalars لا Series)
             vol20 = float(df["Vol20"].iloc[-1]) if not np.isnan(df["Vol20"].iloc[-1]) else 0.0
             vol_today = float(today["Volume"])
-            vol_ok = (vol20 > 0) and (vol_today > vol_mult * vol20)
+            vol_ok = (vol20 > 0.0) and (vol_today > vol_mult * vol20)
 
             rows.append({
                 "Ticker": t,
@@ -99,7 +97,7 @@ def scan_momentum(tickers, vol_mult=1.5):
     return dfm.sort_values("PctToday", ascending=False).head(10)
 
 # -----------------------------
-# دالة التحليل الأساسية — مصححة
+# دالة التحليل الأساسية — كل المقارنات scalar
 # -----------------------------
 def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
     df = load_data(ticker, period)
@@ -129,31 +127,36 @@ def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
 
     last = df.iloc[-1]
 
-    # قيم scalar وليس Series
-    vol20_last = float(df["Vol20"].iloc[-1]) if not np.isnan(df["Vol20"].iloc[-1]) else 0.0
-    vol_spike  = (vol20_last > 0) and (float(last["Volume"]) > vol_factor * vol20_last)
+    close_v   = float(last["Close"])
+    ema20_v   = float(last["EMA20"])
+    ema50_v   = float(last["EMA50"])
+    vwap_v    = float(last["VWAP"])
+    rsi_v     = float(last["RSI"]) if not np.isnan(last["RSI"]) else 50.0
+    vol20_v   = float(df["Vol20"].iloc[-1]) if not np.isnan(df["Vol20"].iloc[-1]) else 0.0
+    vol_today = float(last["Volume"])
 
-    above_ema20 = float(last["Close"]) > float(last["EMA20"])
-    above_vwap  = float(last["Close"]) > float(last["VWAP"])
-    above_ema50 = float(last["Close"]) > float(last["EMA50"])
-    downtrend   = m < 0
-    breakout    = above_ema20 and above_vwap
+    vol_spike   = (vol20_v > 0.0) and (vol_today > vol_factor * vol20_v)
+    above_ema20 = close_v > ema20_v
+    above_vwap  = close_v > vwap_v
+    above_ema50 = close_v > ema50_v
+    downtrend   = bool(m < 0.0)    # scalar
+    breakout    = bool(above_ema20 and above_vwap)
 
     # تصنيف الإشارة
     score = 0.0
     signal = "❌ لا توجد إشارة واضحة"
-    if downtrend and breakout and vol_spike and float(last.get("RSI", 50)) < 75:
+    if downtrend and breakout and vol_spike and rsi_v < 75.0:
         signal = "✅ دخول محتمل (اختراق بفوليوم)"
         score = 1.0
-    elif breakout and float(last.get("RSI", 50)) < 70:
+    elif breakout and rsi_v < 70.0:
         signal = "🟡 اختراق بدون فوليوم قوي (انتظار)"
         score = 0.6
 
     # إدارة مخاطر بسيطة
     recent_lows = df["Low"].tail(3)
     stop = float(recent_lows.min()) if recent_lows.notna().all() else float(last["Low"])
-    risk = max(1e-6, float(last["Close"]) - stop)
-    target1 = float(last["Close"]) + 2 * risk
+    risk = max(1e-6, close_v - stop)
+    target1 = close_v + 2 * risk
 
     return {
         "data": df,
@@ -161,8 +164,8 @@ def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
         "score": score,
         "stop": stop,
         "target1": target1,
-        "last_close": float(last["Close"]),
-        "rsi": float(last["RSI"]) if not np.isnan(last["RSI"]) else None,
+        "last_close": close_v,
+        "rsi": rsi_v,
         "above_ema50": bool(above_ema50)
     }
 
