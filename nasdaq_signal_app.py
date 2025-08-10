@@ -57,7 +57,7 @@ def load_data(tkr: str, period: str):
     return yf.download(tkr, period=period, interval="1d", auto_adjust=True, progress=False)
 
 # -----------------------------
-# ماسح الزخم (Top 10)
+# ماسح الزخم (Top 10) — مصحح
 # -----------------------------
 def scan_momentum(tickers, vol_mult=1.5):
     end = datetime.date.today()
@@ -68,28 +68,38 @@ def scan_momentum(tickers, vol_mult=1.5):
             df = yf.download(t, start=start, end=end, auto_adjust=True, progress=False)
             if df.empty or len(df) < 25:
                 continue
+
             df["Vol20"] = df["Volume"].rolling(20).mean()
             today = df.iloc[-1]
             prev  = df.iloc[-2]
-            pct = (today["Close"] - prev["Close"]) / prev["Close"] * 100.0
-            vol_ok = (today["Vol20"] > 0) and (today["Volume"] > vol_mult * today["Vol20"])
+
+            # نسبة تغير اليوم (scalar)
+            pct = float((today["Close"] - prev["Close"]) / prev["Close"] * 100.0)
+
+            # مقارنة فوليوم (scalars لا Series)
+            vol20 = float(df["Vol20"].iloc[-1]) if not np.isnan(df["Vol20"].iloc[-1]) else 0.0
+            vol_today = float(today["Volume"])
+            vol_ok = (vol20 > 0) and (vol_today > vol_mult * vol20)
+
             rows.append({
                 "Ticker": t,
                 "PctToday": round(pct, 2),
-                "Volume": int(today["Volume"]),
-                "Vol20": int(today["Vol20"]) if not np.isnan(today["Vol20"]) else 0,
+                "Volume": int(vol_today),
+                "Vol20": int(vol20),
                 "VolSpike": vol_ok
             })
         except Exception:
             continue
+
     if not rows:
         return pd.DataFrame()
+
     dfm = pd.DataFrame(rows)
     dfm = dfm[(dfm["VolSpike"]) & (dfm["PctToday"] > 0)]
     return dfm.sort_values("PctToday", ascending=False).head(10)
 
 # -----------------------------
-# دالة التحليل الأساسية
+# دالة التحليل الأساسية — مصححة
 # -----------------------------
 def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
     df = load_data(ticker, period)
@@ -110,8 +120,7 @@ def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
     df["Vol20"] = df["Volume"].rolling(20).mean()
 
     # تقريب ترند هابط لآخر 20 قمة
-    N = 20
-    highs = df["High"].tail(N).reset_index(drop=True)
+    highs = df["High"].tail(20).reset_index(drop=True)
     x = np.arange(len(highs))
     try:
         m, _ = np.polyfit(x, highs.values, 1)
@@ -119,28 +128,32 @@ def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
         m = 0.0
 
     last = df.iloc[-1]
-    vol_spike   = (df["Vol20"].iloc[-1] > 0) and (last["Volume"] > vol_factor * df["Vol20"].iloc[-1])
-    above_ema20 = last["Close"] > last["EMA20"]
-    above_vwap  = last["Close"] > last["VWAP"]
-    above_ema50 = last["Close"] > last["EMA50"]
+
+    # قيم scalar وليس Series
+    vol20_last = float(df["Vol20"].iloc[-1]) if not np.isnan(df["Vol20"].iloc[-1]) else 0.0
+    vol_spike  = (vol20_last > 0) and (float(last["Volume"]) > vol_factor * vol20_last)
+
+    above_ema20 = float(last["Close"]) > float(last["EMA20"])
+    above_vwap  = float(last["Close"]) > float(last["VWAP"])
+    above_ema50 = float(last["Close"]) > float(last["EMA50"])
     downtrend   = m < 0
     breakout    = above_ema20 and above_vwap
 
     # تصنيف الإشارة
     score = 0.0
     signal = "❌ لا توجد إشارة واضحة"
-    if downtrend and breakout and vol_spike and last["RSI"] < 75:
+    if downtrend and breakout and vol_spike and float(last.get("RSI", 50)) < 75:
         signal = "✅ دخول محتمل (اختراق بفوليوم)"
         score = 1.0
-    elif breakout and last["RSI"] < 70:
+    elif breakout and float(last.get("RSI", 50)) < 70:
         signal = "🟡 اختراق بدون فوليوم قوي (انتظار)"
         score = 0.6
 
     # إدارة مخاطر بسيطة
     recent_lows = df["Low"].tail(3)
     stop = float(recent_lows.min()) if recent_lows.notna().all() else float(last["Low"])
-    risk = max(1e-6, last["Close"] - stop)
-    target1 = float(last["Close"] + 2 * risk)
+    risk = max(1e-6, float(last["Close"]) - stop)
+    target1 = float(last["Close"]) + 2 * risk
 
     return {
         "data": df,
