@@ -13,15 +13,15 @@ st.title("📈 الباحث الذكي عن فرص الدخول في أسهم ن
 st.markdown("تحليل فني تلقائي على الفاصل اليومي لاكتشاف **اختراق بعد تصحيح** مع **فوليوم مرتفع** + ماسح **زخم اليوم**.")
 
 # -----------------------------
-# دوال مساعدة (RSI يدوي)
+# دالة RSI (يدوي)
 # -----------------------------
-def rsi(series, length=14):
+def rsi(series: pd.Series, length: int = 14) -> pd.Series:
     delta = series.diff()
-    up = delta.clip(lower=0)
-    down = -delta.clip(upper=0)
+    up = delta.clip(lower=0.0)
+    down = (-delta).clip(lower=0.0)
     roll_up = up.ewm(alpha=1/length, adjust=False).mean()
     roll_down = down.ewm(alpha=1/length, adjust=False).mean()
-    rs = roll_up / roll_down
+    rs = roll_up / roll_down.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
 # -----------------------------
@@ -29,8 +29,6 @@ def rsi(series, length=14):
 # -----------------------------
 sector_etfs = ["XLK","XLE","XLF","XLV","XLC","XLY","XLP","XLI","XLU","XLB","XLRE","SOXX","SMH","XSD"]
 default_list = ["AAPL","NVDA","AMD","MSFT","TSLA","AMZN","META","GOOGL","NFLX","INTC"]
-
-# قائمة أساس للزخم (قابلة للتوسيع)
 BASE_LIST = [
     "AAPL","NVDA","AMD","MSFT","TSLA","AMZN","META","GOOGL","NFLX","INTC",
     "AVGO","ADBE","COST","PEP","ASML","LIN","CSCO","TMUS","TXN","QCOM",
@@ -53,27 +51,29 @@ run_momentum = st.sidebar.checkbox("تشغيل ماسح الزخم (Top 10 ال�
 # جلب البيانات مع كاش
 # -----------------------------
 @st.cache_data(show_spinner=False, ttl=60*30)
-def load_data(tkr: str, period: str):
-    return yf.download(tkr, period=period, interval="1d", auto_adjust=True, progress=False)
+def load_data(tkr: str, period: str) -> pd.DataFrame:
+    df = yf.download(tkr, period=period, interval="1d", auto_adjust=True, progress=False)
+    return df if isinstance(df, pd.DataFrame) else pd.DataFrame()
 
 # -----------------------------
-# ماسح الزخم (Top 10) — مقارنات scalar
+# ماسح الزخم (Top 10) — مقارنات scalar 100%
 # -----------------------------
-def scan_momentum(tickers, vol_mult=1.5):
+def scan_momentum(pool, vol_mult=1.5) -> pd.DataFrame:
     end = datetime.date.today()
     start = end - datetime.timedelta(days=60)
     rows = []
-    for t in tickers:
+    for t in pool:
         try:
             df = yf.download(t, start=start, end=end, auto_adjust=True, progress=False)
             if df.empty or len(df) < 25:
                 continue
-
             df["Vol20"] = df["Volume"].rolling(20).mean()
             today = df.iloc[-1]
             prev  = df.iloc[-2]
 
-            pct = float((float(today["Close"]) - float(prev["Close"])) / float(prev["Close"]) * 100.0)
+            close_today = float(today["Close"])
+            close_prev  = float(prev["Close"])
+            pct = float((close_today - close_prev) / close_prev * 100.0)
 
             vol20 = float(df["Vol20"].iloc[-1]) if not np.isnan(df["Vol20"].iloc[-1]) else 0.0
             vol_today = float(today["Volume"])
@@ -91,13 +91,12 @@ def scan_momentum(tickers, vol_mult=1.5):
 
     if not rows:
         return pd.DataFrame()
-
     dfm = pd.DataFrame(rows)
-    dfm = dfm[(dfm["VolSpike"]) & (dfm["PctToday"] > 0)]
+    dfm = dfm[(dfm["VolSpike"]) & (dfm["PctToday"] > 0.0)]
     return dfm.sort_values("PctToday", ascending=False).head(10)
 
 # -----------------------------
-# دالة التحليل الأساسية — كل المقارنات scalar
+# التحليل الأساسي — مقارنات scalar 100%
 # -----------------------------
 def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
     df = load_data(ticker, period)
@@ -111,22 +110,23 @@ def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
     df["RSI"]    = rsi(df["Close"], length=14)
 
     # VWAP تراكمي
-    tp = (df["High"] + df["Low"] + df["Close"]) / 3
-    df["VWAP"] = (tp * df["Volume"]).cumsum() / df["Volume"].replace(0, np.nan).cumsum()
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3.0
+    vwap_num = (tp * df["Volume"]).cumsum()
+    vwap_den = df["Volume"].replace(0, np.nan).cumsum()
+    df["VWAP"] = vwap_num / vwap_den
 
     # متوسط حجم 20 يوم
     df["Vol20"] = df["Volume"].rolling(20).mean()
 
-    # تقريب ترند هابط لآخر 20 قمة
+    # ميل قمم آخر 20 جلسة (ترند)
     highs = df["High"].tail(20).reset_index(drop=True)
-    x = np.arange(len(highs))
-    try:
-        m, _ = np.polyfit(x, highs.values, 1)
-    except Exception:
+    if len(highs) >= 2 and highs.notna().all():
+        x = np.arange(len(highs), dtype=float)
+        m = float(np.polyfit(x, highs.values, 1)[0])  # scalar
+    else:
         m = 0.0
 
     last = df.iloc[-1]
-
     close_v   = float(last["Close"])
     ema20_v   = float(last["EMA20"])
     ema50_v   = float(last["EMA50"])
@@ -139,8 +139,8 @@ def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
     above_ema20 = close_v > ema20_v
     above_vwap  = close_v > vwap_v
     above_ema50 = close_v > ema50_v
-    downtrend   = bool(m < 0.0)    # scalar
-    breakout    = bool(above_ema20 and above_vwap)
+    downtrend   = m < 0.0
+    breakout    = above_ema20 and above_vwap
 
     # تصنيف الإشارة
     score = 0.0
@@ -152,11 +152,11 @@ def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
         signal = "🟡 اختراق بدون فوليوم قوي (انتظار)"
         score = 0.6
 
-    # إدارة مخاطر بسيطة
+    # إدارة المخاطر
     recent_lows = df["Low"].tail(3)
     stop = float(recent_lows.min()) if recent_lows.notna().all() else float(last["Low"])
     risk = max(1e-6, close_v - stop)
-    target1 = close_v + 2 * risk
+    target1 = close_v + 2.0 * risk
 
     return {
         "data": df,
@@ -170,7 +170,7 @@ def analyze_stock(ticker: str, period: str = "6mo", vol_factor: float = 1.5):
     }
 
 # -----------------------------
-# قسم الزخم قبل التحليل
+# قسم الزخم
 # -----------------------------
 st.subheader("🚀 أفضل 10 أسهم زخم اليوم")
 top_df = pd.DataFrame()
@@ -226,7 +226,9 @@ if st.button("🔍 ابحث عن فرص"):
                 ax.legend()
                 st.pyplot(fig)
 
-                # أحجام التداول
-                st.bar_chart(df[["Volume","Vol20"]].tail(60))
+                # أحجام التداول (مع معالجة NaN)
+                vol_view = df[["Volume","Vol20"]].tail(60).copy()
+                vol_view["Vol20"] = vol_view["Vol20"].fillna(0.0)
+                st.bar_chart(vol_view)
 else:
     st.info("اختر الرموز من الشريط الجانبي ثم اضغط **🔍 ابحث عن فرص** أو استخدم **حلّل نتائج الزخم**.")
